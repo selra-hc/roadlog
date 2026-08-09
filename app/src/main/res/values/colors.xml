@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches ui/theme/Color.kt's BackgroundDark — avoids a white flash between the
+         pre-Compose window background and the first Compose frame (RoadLog is dark-first,
+         §8.2). The AMOLED variant is a Compose-only runtime choice, not reflected here. -->
+    <color name="windowBackground">#FF1A1A1D</color>
+</resources>

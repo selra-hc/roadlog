@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sampled from android_dashcam_icon_nano_banana.png's flat background. -->
+    <color name="ic_launcher_background">#0147A2</color>
+</resources>
