@@ -81,6 +81,11 @@ fun PipOverlayContent(
     ) {
         val isPaused = recorderService.overlayIsPaused
         val isCut = recorderService.feedCut
+        // Idle-timeout suspension (§9.6's energy-efficiency pass) — a separate flag from
+        // the user-driven `isCut`, ORed together at render time below so either one alone
+        // is enough to show the placeholder instead of live video.
+        val isIdleSuspended = recorderService.pipIdleSuspended
+        val showPlaceholder = isCut || isIdleSuspended
         val pauseLabel = stringResource(R.string.ui_recorder_action_pause_label)
         val resumeLabel = stringResource(R.string.ui_recorder_action_resume_label)
         val cutLabel = stringResource(R.string.ui_recorder_action_cutFeed_label)
@@ -113,17 +118,22 @@ fun PipOverlayContent(
                 // instead consumes the movement, which cancels the pending tap detection
                 // automatically. The button row below is a further sibling drawn on top and
                 // consumes its own pointer events first, so tapping a button never starts a
-                // drag or opens the app.
+                // drag or opens the app. Both also reset the idle-suspend timer (§9.6) —
+                // resetPipActivity() below.
                 .pointerInput(Unit) {
-                    detectTapGestures(onTap = { onOpenApp() })
+                    detectTapGestures(onTap = {
+                        recorderService.resetPipActivity()
+                        onOpenApp()
+                    })
                 }
                 .pointerInput(Unit) {
                     detectDragGestures { _, dragAmount ->
+                        recorderService.resetPipActivity()
                         onDrag(dragAmount.x.toInt(), dragAmount.y.toInt())
                     }
                 },
         ) {
-            if (isCut) {
+            if (showPlaceholder) {
                 // Mirrors the Record screen's own Cut/Uncut placeholder (§9.1) — same black
                 // screen + label, same reason: `RecordingPreview` isn't composed at all in
                 // this branch, so it's not just visually hidden, its surface provider is
@@ -186,6 +196,7 @@ fun PipOverlayContent(
                     icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
                     label = if (isPaused) resumeLabel else pauseLabel,
                     onClick = {
+                        recorderService.resetPipActivity()
                         if (isPaused) {
                             recorderService.resumeRecording()
                         } else {
@@ -196,12 +207,18 @@ fun PipOverlayContent(
                 PipButton(
                     icon = if (isCut) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                     label = if (isCut) uncutLabel else cutLabel,
-                    onClick = onCutFeed,
+                    onClick = {
+                        recorderService.resetPipActivity()
+                        onCutFeed()
+                    },
                 )
                 PipButton(
                     icon = Icons.Default.Save,
                     label = saveLabel,
-                    onClick = onSave,
+                    onClick = {
+                        recorderService.resetPipActivity()
+                        onSave()
+                    },
                 )
             }
         }

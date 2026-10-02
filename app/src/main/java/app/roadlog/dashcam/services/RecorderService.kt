@@ -10,6 +10,7 @@ import androidx.lifecycle.LifecycleService
 import app.roadlog.dashcam.NotificationHelper
 import app.roadlog.dashcam.enums.RecorderState
 import app.roadlog.dashcam.ui.utils.PermissionHelper
+import java.time.Duration
 import java.time.LocalDateTime
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -34,22 +35,87 @@ abstract class RecorderService : LifecycleService() {
     var recordingTime = 0L
         private set
 
+    // Whether the app is currently in the foreground — set via `onAppBackgrounded()`/
+    // `onAppForegrounded()` below, called from the concrete recorder service's own
+    // `ProcessLifecycleOwner` observer (§9.6's energy-efficiency pass). Defaults true
+    // since a recording session always starts from foreground UI interaction.
+    private var isAppInForeground = true
+
+    // Non-null while currently backgrounded (or backgrounded-then-paused) and RECORDING,
+    // holding the timestamp from which elapsed seconds haven't been added to
+    // `recordingTime` yet — flushed in one step by `flushBackgroundedElapsedTime()`
+    // whenever that state ends (foregrounded, or paused), rather than relying on the
+    // once-a-second ticks this mechanism deliberately skips while backgrounded.
+    private var backgroundedSince: LocalDateTime? = null
+
+    private fun flushBackgroundedElapsedTime() {
+        val since = backgroundedSince ?: return
+        backgroundedSince = null
+
+        recordingTime += Duration.between(since, LocalDateTime.now()).seconds
+        onRecordingTimeChange?.invoke(recordingTime)
+    }
+
     protected open fun start() {
-        createRecordingTimeTimer()
+        if (isAppInForeground) {
+            createRecordingTimeTimer()
+        } else {
+            backgroundedSince = LocalDateTime.now()
+        }
     }
 
     protected open fun pause() {
         isPaused = true
 
-        recordingTimeTimer.shutdown()
+        flushBackgroundedElapsedTime()
+        if (::recordingTimeTimer.isInitialized) {
+            recordingTimeTimer.shutdown()
+        }
     }
 
     protected open fun resume() {
-        createRecordingTimeTimer()
+        if (isAppInForeground) {
+            createRecordingTimeTimer()
+        } else {
+            backgroundedSince = LocalDateTime.now()
+        }
     }
 
     protected open suspend fun stop() {
-        recordingTimeTimer.shutdown()
+        flushBackgroundedElapsedTime()
+        if (::recordingTimeTimer.isInitialized) {
+            recordingTimeTimer.shutdown()
+        }
+    }
+
+    // Stops the once-a-second UI-only elapsed-time tick while there's no foreground UI
+    // to update — the foreground notification renders its own chronometer from a single
+    // timestamp (`setUsesChronometer`/`setWhen`, see `buildNotification()` below), not
+    // from these ticks, so nothing needs this timer running with no visible timer to
+    // observe it (§9.6's energy-efficiency pass). No-op unless currently RECORDING
+    // (PAUSED already has no running timer).
+    fun onAppBackgrounded() {
+        isAppInForeground = false
+
+        if (state != RecorderState.RECORDING) {
+            return
+        }
+
+        backgroundedSince = LocalDateTime.now()
+        if (::recordingTimeTimer.isInitialized) {
+            recordingTimeTimer.shutdown()
+        }
+    }
+
+    // Recomputes the elapsed background time in one step (rather than relying on ticks
+    // that were deliberately skipped) and restarts the timer if still RECORDING.
+    fun onAppForegrounded() {
+        isAppInForeground = true
+
+        flushBackgroundedElapsedTime()
+        if (state == RecorderState.RECORDING) {
+            createRecordingTimeTimer()
+        }
     }
 
     protected abstract fun startForegroundService()

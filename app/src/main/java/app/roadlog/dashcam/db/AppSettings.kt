@@ -48,6 +48,22 @@ data class AppSettings(
     // requiring a manual tap (§9.1) — default on, since that's the expected behavior
     // for a mounted, always-on device.
     val autoStartOnLaunch: Boolean = true,
+
+    // Fades the Record screen's backlight to a minimal brightness after a period of no
+    // touch input while recording, restoring instantly on the next touch (§9.6's
+    // energy-efficiency pass — `ui/utils/views.kt`'s `dimWhileRecording`). Off by
+    // default: a real, visible behavior change to a screen users may rely on glancing
+    // at, worth defaulting on only after real-device validation.
+    val dimScreenWhileRecording: Boolean = false,
+
+    // Set by `VideoRecorderService` after `EncoderCapabilityChecker` runs at camera-open
+    // time (§9.6's energy-efficiency pass, hardware-encoder guardrail) — true only when
+    // the resolved encoder for the currently-selected quality was confirmed NOT
+    // hardware-accelerated. Advisory-only: surfaces a one-time Settings banner, never
+    // changes recording behavior on its own. Re-evaluated (and can clear itself) on
+    // every recording start, so this always reflects the most recent check, not a
+    // permanently-sticky flag.
+    val softwareEncoderDetected: Boolean = false,
 ) {
     fun setShowAdvancedSettings(showAdvancedSettings: Boolean): AppSettings {
         return copy(showAdvancedSettings = showAdvancedSettings)
@@ -127,6 +143,14 @@ data class AppSettings(
 
     fun setAutoStartOnLaunch(autoStartOnLaunch: Boolean): AppSettings {
         return copy(autoStartOnLaunch = autoStartOnLaunch)
+    }
+
+    fun setDimScreenWhileRecording(dimScreenWhileRecording: Boolean): AppSettings {
+        return copy(dimScreenWhileRecording = dimScreenWhileRecording)
+    }
+
+    fun setSoftwareEncoderDetected(softwareEncoderDetected: Boolean): AppSettings {
+        return copy(softwareEncoderDetected = softwareEncoderDetected)
     }
 
     fun saveLastRecording(recorder: RecorderModel): AppSettings {
@@ -255,6 +279,17 @@ data class VideoRecorderSettings(
     // overlay's Save button and impact auto-save (both via `IntervalRecorderService
     // .concatenateCurrentBuffer()`).
     val processVideo: Boolean = true,
+    // Dual (front+back) recording (§9.3) previously bound both cameras at the SAME
+    // quality/bitrate/frame-rate as the primary — two concurrent hardware-encoder
+    // instances at full quality, often two simultaneous 4K encodes (§9.6's
+    // energy-efficiency pass). On (default): the secondary/front stream — driver-facing
+    // verification footage, not the primary evidentiary road footage — instead records
+    // at a fixed, deliberately lower profile (`VideoRecorderService
+    // .SECONDARY_STREAM_QUALITY`/`_BITRATE`/`_FRAME_RATE`), roughly halving dual
+    // recording's total encode cost. Off restores the original symmetric-quality
+    // behavior. Only has any effect while dual recording is active; a no-op for
+    // single-camera recording.
+    val useLightweightSecondaryStream: Boolean = true,
 ) {
     fun setTargetedVideoBitRate(bitRate: Int?): VideoRecorderSettings {
         return copy(targetedVideoBitRate = bitRate)
@@ -276,6 +311,10 @@ data class VideoRecorderSettings(
 
     fun setProcessVideo(processVideo: Boolean): VideoRecorderSettings {
         return copy(processVideo = processVideo)
+    }
+
+    fun setUseLightweightSecondaryStream(useLightweightSecondaryStream: Boolean): VideoRecorderSettings {
+        return copy(useLightweightSecondaryStream = useLightweightSecondaryStream)
     }
 
     fun getQuality(): Quality? =
@@ -402,7 +441,19 @@ data class LocationSettings(
 @Serializable
 data class PipSettings(
     val enabled: Boolean = false,
+    // Fades the overlay's live preview to the same placeholder the manual Cut/Uncut
+    // button already produces after a period of no interaction (drag/tap/button press)
+    // — a small, floating, always-backgrounded window keeping a full GPU-composited
+    // camera preview running indefinitely with nobody watching it is pure waste
+    // (§9.6's energy-efficiency pass). Defaults on: only takes effect when the PIP
+    // itself is already enabled, and is purely cosmetic/reversible (any interaction
+    // restores it instantly).
+    val idleSuspendEnabled: Boolean = true,
 ) {
+    fun setIdleSuspendEnabled(idleSuspendEnabled: Boolean): PipSettings {
+        return copy(idleSuspendEnabled = idleSuspendEnabled)
+    }
+
     companion object {
         fun getDefaultInstance() = PipSettings()
     }

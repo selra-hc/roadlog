@@ -48,6 +48,7 @@ import app.roadlog.dashcam.ui.models.VideoRecorderModel
 import app.roadlog.dashcam.ui.theme.CardCornerRadius
 import app.roadlog.dashcam.ui.theme.RoadLogTheme
 import app.roadlog.dashcam.ui.utils.KeepScreenOn
+import app.roadlog.dashcam.ui.utils.dimWhileRecording
 import app.roadlog.dashcam.ui.utils.rememberInitialRecordingAnimation
 import kotlinx.coroutines.launch
 
@@ -195,7 +196,14 @@ fun VideoRecordingStatus(
     val fullScreenWidthDp = with(density) { fullScreenSize.widthPixels.toDp() }
     val fullScreenHeightDp = with(density) { fullScreenSize.heightPixels.toDp() }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .dimWhileRecording(
+                enabled = videoRecorder.settings?.dimScreenWhileRecording ?: false,
+                idleTimeoutMs = DIM_IDLE_TIMEOUT_MS,
+            ),
+    ) {
         // Split-screen/multi-window compactness is relative to the device's actual
         // screen, not a fixed dp value (which would trigger at a different fraction of
         // the screen on a small phone than on a tablet) — hide time/free-space once the
@@ -328,6 +336,10 @@ fun VideoRecordingStatus(
 // Below 1/this-many of the full screen's size on BOTH axes simultaneously = compact/
 // split-screen mode (see isCompact above) — "a third of screen" per the reported bug.
 private const val COMPACT_SIZE_FRACTION_DIVISOR = 3
+
+// §9.6's energy-efficiency pass — how long the Record screen waits with no touch input
+// before dimming (`dimWhileRecording`), when the setting is on.
+private const val DIM_IDLE_TIMEOUT_MS = 15_000L
 
 // Translucent backing plate (§9.1) behind status text/controls so they stay legible over
 // live, unpredictable video content — a card-rail-style panel using the same

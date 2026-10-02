@@ -106,7 +106,13 @@ abstract class IntervalRecorderService<I : RecordingInformation, B : BatchesFold
     override fun start() {
         super.start()
 
-        locationTracker.start(updateIntervalMs = settings.location.updateIntervalMs)
+        // GPS's only consumer anywhere in the app is `WatermarkTextProvider` (the speed
+        // readout burned into the watermark) — no point keeping the GPS radio warm at
+        // `settings.location.updateIntervalMs` for a value nothing reads when watermarking
+        // itself is turned off (§9.6's energy-efficiency pass).
+        if (settings.watermark.enabled) {
+            locationTracker.start(updateIntervalMs = settings.location.updateIntervalMs)
+        }
         impactDetector.onImpactDetected = ::onImpactDetected
         impactDetector.start()
         resumePendingImpactSaveIfAny()

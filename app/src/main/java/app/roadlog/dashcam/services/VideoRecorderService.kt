@@ -2,7 +2,10 @@ package app.roadlog.dashcam.services
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.hardware.camera2.CaptureRequest
 import android.hardware.display.DisplayManager
@@ -44,9 +47,11 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import app.roadlog.dashcam.NotificationHelper
+import app.roadlog.dashcam.dataStore
 import app.roadlog.dashcam.db.RecordingInformation
 import app.roadlog.dashcam.enums.RecorderState
 import app.roadlog.dashcam.helpers.BatchesFolder
+import app.roadlog.dashcam.helpers.EncoderCapabilityChecker
 import app.roadlog.dashcam.helpers.VideoBatchesFolder
 import app.roadlog.dashcam.ui.SUPPORTS_SAVING_VIDEOS_IN_CUSTOM_FOLDERS
 import app.roadlog.dashcam.ui.SUPPORTS_SCOPED_STORAGE
@@ -56,7 +61,9 @@ import app.roadlog.dashcam.watermark.WatermarkOverlay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -214,6 +221,40 @@ class VideoRecorderService :
     var overlayIsPaused: Boolean by mutableStateOf(false)
         private set
 
+    // PIP idle-timeout suspension (§9.6's energy-efficiency pass) — a small, always-
+    // backgrounded floating window keeping a full GPU-composited live preview running
+    // indefinitely with nobody watching it is pure waste. `pipIdleSuspendJob` restarts
+    // every time `resetPipActivity()` is called (drag/tap/button press, from
+    // `PipOverlayContent`); if it ever completes uninterrupted, the overlay fades to the
+    // same "Dashcam active"/"Dashcam paused" placeholder the manual Cut/Uncut button
+    // already produces (`isCut || pipIdleSuspended` at render time) — reusing that
+    // already-hardened teardown path rather than a new one.
+    private var _pipIdleSuspended by mutableStateOf(false)
+    val pipIdleSuspended: Boolean
+        get() = _pipIdleSuspended
+    private var pipIdleSuspendJob: Job? = null
+
+    fun resetPipActivity() {
+        _pipIdleSuspended = false
+
+        if (!settings.pip.idleSuspendEnabled) {
+            pipIdleSuspendJob?.cancel()
+            return
+        }
+
+        pipIdleSuspendJob?.cancel()
+        pipIdleSuspendJob = scope.launch {
+            delay(PIP_IDLE_SUSPEND_TIMEOUT)
+            _pipIdleSuspended = true
+        }
+    }
+
+    private fun cancelPipIdleSuspend() {
+        pipIdleSuspendJob?.cancel()
+        pipIdleSuspendJob = null
+        _pipIdleSuspended = false
+    }
+
     // `ProcessLifecycleOwner` (unlike this service's own `LifecycleOwner`, whose lifecycle
     // follows the *service's* create/destroy) reports the whole app's foreground/background
     // state — exactly what §2.2 of newFeat.md needs: show the overlay when the app (not
@@ -221,10 +262,12 @@ class VideoRecorderService :
     private val processLifecycleObserver = object : DefaultLifecycleObserver {
         override fun onStop(owner: LifecycleOwner) {
             maybeShowPipOverlay()
+            onAppBackgrounded()
         }
 
         override fun onStart(owner: LifecycleOwner) {
             hidePipOverlay()
+            onAppForegrounded()
         }
     }
 
@@ -248,10 +291,34 @@ class VideoRecorderService :
         if (!Settings.canDrawOverlays(this)) return
 
         pipOverlay.show(this)
+        resetPipActivity()
     }
 
     private fun hidePipOverlay() {
         pipOverlay.hide()
+        cancelPipIdleSuspend()
+    }
+
+    // The PIP overlay (when showing) keeps a full live GPU-composited camera preview
+    // running via `WindowManager` for as long as the app stays backgrounded — including
+    // while the phone's screen is off, when nothing can possibly see it (§9.6's
+    // energy-efficiency pass). `ProcessLifecycleOwner` alone doesn't catch this: once
+    // the app is already backgrounded (and the PIP is already showing), the screen
+    // turning off/on doesn't start/stop any of the app's own activities, so no further
+    // `onStop`/`onStart` fires from that alone — a dedicated `SCREEN_OFF`/`SCREEN_ON`
+    // signal is needed. Reuses the exact same `hidePipOverlay()`/`maybeShowPipOverlay()`
+    // functions the background/foreground transition already calls — no new teardown
+    // path, just an additional trigger for the existing one. `SCREEN_OFF`/`SCREEN_ON`
+    // are explicitly exempted from the API 26+ implicit-broadcast restrictions (they're
+    // only ever deliverable to a dynamically-registered receiver, manifest-declared or
+    // not), so this must stay a runtime `registerReceiver` call, never a manifest entry.
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> hidePipOverlay()
+                Intent.ACTION_SCREEN_ON -> maybeShowPipOverlay()
+            }
+        }
     }
 
     // `MainActivity` declares `configChanges` (§10.1) so it's never recreated on
@@ -379,10 +446,22 @@ class VideoRecorderService :
         // (state == RECORDING, etc.) is what actually decides whether anything happens on
         // a given background transition.
         ProcessLifecycleOwner.get().lifecycle.addObserver(processLifecycleObserver)
+
+        ContextCompat.registerReceiver(
+            this,
+            screenStateReceiver,
+            IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_SCREEN_ON)
+            },
+            // System-only broadcasts (no other app can send these) — never exported.
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
     }
 
     override fun onDestroy() {
         ProcessLifecycleOwner.get().lifecycle.removeObserver(processLifecycleObserver)
+        unregisterReceiver(screenStateReceiver)
         hidePipOverlay()
         viewModelStore.clear()
 
@@ -566,21 +645,41 @@ class VideoRecorderService :
         mainHandler.execute(callback)
     }
 
-    private fun buildRecorder() = Recorder.Builder()
+    // `useLightweightSecondaryStreamProfile` (§9.6's energy-efficiency pass): the
+    // secondary/front stream of a dual recording is driver-facing verification footage,
+    // not the primary evidentiary road footage, so it doesn't need matching quality —
+    // when `VideoRecorderSettings.useLightweightSecondaryStream` is on (default), it
+    // records at the fixed, deliberately lower `SECONDARY_STREAM_*` profile below
+    // instead of cloning the primary's own (often much higher, e.g. `Quality.HIGHEST`)
+    // settings, roughly halving dual recording's total concurrent encode cost.
+    private fun buildRecorder(useLightweightSecondaryStreamProfile: Boolean = false) = Recorder.Builder()
         .setQualitySelector(
-            settings.videoRecorderSettings.getQualitySelector()
-                ?: QualitySelector.from(Quality.HIGHEST)
+            if (useLightweightSecondaryStreamProfile) {
+                QualitySelector.from(SECONDARY_STREAM_QUALITY)
+            } else {
+                settings.videoRecorderSettings.getQualitySelector()
+                    ?: QualitySelector.from(Quality.HIGHEST)
+            }
         )
         .apply {
-            if (settings.videoRecorderSettings.targetedVideoBitRate != null) {
-                setTargetVideoEncodingBitRate(settings.videoRecorderSettings.targetedVideoBitRate!!)
+            val bitrate = if (useLightweightSecondaryStreamProfile) {
+                SECONDARY_STREAM_BITRATE
+            } else {
+                settings.videoRecorderSettings.targetedVideoBitRate
+            }
+            if (bitrate != null) {
+                setTargetVideoEncodingBitRate(bitrate)
             }
         }
         .build()
 
-    private fun buildVideoCapture(recorder: Recorder) = VideoCapture.Builder(recorder)
+    private fun buildVideoCapture(recorder: Recorder, useLightweightSecondaryStreamProfile: Boolean = false) = VideoCapture.Builder(recorder)
         .apply {
-            val frameRate = settings.videoRecorderSettings.targetFrameRate
+            val frameRate = if (useLightweightSecondaryStreamProfile) {
+                SECONDARY_STREAM_FRAME_RATE
+            } else {
+                settings.videoRecorderSettings.targetFrameRate
+            }
             if (frameRate != null) {
                 setTargetFrameRate(Range(frameRate, frameRate))
             }
@@ -603,23 +702,32 @@ class VideoRecorderService :
         // Burns the watermark into every frame both VideoCapture's encoder AND the live
         // preview receive (§5, §9.1) — a CameraEffect attached via UseCaseGroup,
         // CameraX's officially-supported way to composite a GL/Canvas layer onto camera
-        // frames before they reach either output.
-        watermarkOverlay = WatermarkOverlay(
-            context = this,
-            locationTracker = locationTracker,
-            getSettings = { settings.watermark },
-        )
+        // frames before they reach either output. Only constructed/attached when the
+        // watermark is actually enabled (§9.6's energy-efficiency pass) — previously this
+        // ran unconditionally even with watermarking turned off in settings, paying for a
+        // GPU compositing pass and a dedicated urgent-priority `HandlerThread` for the
+        // entire recording session with nothing to show for it (`WatermarkRenderer.draw()`
+        // would just clear the canvas and return).
+        watermarkOverlay = if (settings.watermark.enabled) {
+            WatermarkOverlay(
+                context = this,
+                locationTracker = locationTracker,
+                getSettings = { settings.watermark },
+            )
+        } else {
+            null
+        }
         // Computed once and reused for both use case groups below (primary + dual-recording
         // secondary) — it doesn't depend on which camera it's bound to, so there's no need
         // to re-query `Display.getRealMetrics()` a second time in the same `openCamera()` call.
         val viewPort = buildViewPort()
 
-        val useCaseGroup = UseCaseGroup.Builder()
+        val useCaseGroupBuilder = UseCaseGroup.Builder()
             .addUseCase(videoCapture!!)
             .addUseCase(preview)
-            .addEffect(watermarkOverlay!!.cameraEffect)
             .setViewPort(viewPort)
-            .build()
+        watermarkOverlay?.let { useCaseGroupBuilder.addEffect(it.cameraEffect) }
+        val useCaseGroup = useCaseGroupBuilder.build()
 
         // Dual (front+back) recording (§9.3): resolve a concurrently-bindable front+back
         // pair straight from CameraX's own capability query, independent of
@@ -644,8 +752,9 @@ class VideoRecorderService :
 
         var secondaryUseCaseGroup: UseCaseGroup? = null
         if (secondarySelector != null) {
-            val secondaryRecorder = buildRecorder()
-            secondaryVideoCapture = buildVideoCapture(secondaryRecorder)
+            val useLightweightSecondaryStreamProfile = settings.videoRecorderSettings.useLightweightSecondaryStream
+            val secondaryRecorder = buildRecorder(useLightweightSecondaryStreamProfile)
+            secondaryVideoCapture = buildVideoCapture(secondaryRecorder, useLightweightSecondaryStreamProfile)
             // `updateTargetRotation()` already ran above (line ~376), before this field
             // existed — its `secondaryVideoCapture?.targetRotation = rotation` line was a
             // no-op that call. Without this, the secondary/front stream's initial
@@ -653,16 +762,20 @@ class VideoRecorderService :
             // resolves to, rather than the explicitly-read current rotation the primary
             // stream got — re-running it now that the field is non-null closes that gap.
             updateTargetRotation()
-            secondaryWatermarkOverlay = WatermarkOverlay(
-                context = this,
-                locationTracker = locationTracker,
-                getSettings = { settings.watermark },
-            )
-            secondaryUseCaseGroup = UseCaseGroup.Builder()
+            secondaryWatermarkOverlay = if (settings.watermark.enabled) {
+                WatermarkOverlay(
+                    context = this,
+                    locationTracker = locationTracker,
+                    getSettings = { settings.watermark },
+                )
+            } else {
+                null
+            }
+            val secondaryUseCaseGroupBuilder = UseCaseGroup.Builder()
                 .addUseCase(secondaryVideoCapture!!)
-                .addEffect(secondaryWatermarkOverlay!!.cameraEffect)
                 .setViewPort(viewPort)
-                .build()
+            secondaryWatermarkOverlay?.let { secondaryUseCaseGroupBuilder.addEffect(it.cameraEffect) }
+            secondaryUseCaseGroup = secondaryUseCaseGroupBuilder.build()
         }
 
         runOnMain {
@@ -691,6 +804,7 @@ class VideoRecorderService :
                 onCameraControlAvailable()
 
                 applyFocusSettings(camera!!)
+                checkEncoderCapability(camera!!)
 
                 _cameraAvailableListener.complete(Unit)
             } catch (error: IllegalArgumentException) {
@@ -724,6 +838,22 @@ class VideoRecorderService :
             Camera2CameraControl.from(camera.cameraControl).setCaptureRequestOptions(options)
         }.onFailure { error ->
             Log.e("VideoRecorderService", "Failed to apply fixed far-distance focus", error)
+        }
+    }
+
+    // Hardware-encoder guardrail (§9.6's energy-efficiency pass) — advisory only, never
+    // affects camera-open or recording itself. Runs on `scope` (off the caller) since
+    // `MediaCodecList` enumeration isn't free; persists its result via DataStore, always
+    // reflecting the most recent check rather than staying permanently sticky, so the
+    // Settings screen can surface a one-time banner if it's ever found to be true.
+    private fun checkEncoderCapability(camera: Camera) {
+        scope.launch {
+            val quality = settings.videoRecorderSettings.getQuality() ?: Quality.HIGHEST
+            val isHardware = runCatching {
+                EncoderCapabilityChecker.isHardwareEncoder(camera.cameraInfo, quality)
+            }.getOrNull() ?: return@launch
+
+            dataStore.updateData { it.setSoftwareEncoderDetected(!isHardware) }
         }
     }
 
@@ -870,5 +1000,14 @@ class VideoRecorderService :
 
     companion object {
         const val CAMERA_CLOSE_TIMEOUT = 20000L
+        const val PIP_IDLE_SUSPEND_TIMEOUT = 20000L
+
+        // Fixed lightweight profile for a dual recording's secondary/front stream
+        // (§9.6's energy-efficiency pass) — deliberately well below typical primary
+        // settings (often `Quality.HIGHEST`), since this stream only needs to be good
+        // enough to verify who was in the driver's seat, not evidentiary road footage.
+        val SECONDARY_STREAM_QUALITY = Quality.SD
+        const val SECONDARY_STREAM_BITRATE = 2_000_000
+        const val SECONDARY_STREAM_FRAME_RATE = 15
     }
 }

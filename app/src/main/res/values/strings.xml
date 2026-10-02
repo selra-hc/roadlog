@@ -66,6 +66,9 @@
     <string name="ui_settings_advancedSettings_label">Advanced Settings</string>
     <string name="ui_settings_hint_recordingActive_title">You are recording</string>
     <string name="ui_settings_hint_recordingActive_message">Your changes will be applied the next time you start recording</string>
+    <string name="ui_settings_hint_softwareEncoder_title">No hardware video encoder found</string>
+    <string name="ui_settings_hint_softwareEncoder_message">Your device is recording using a software (CPU-based) encoder instead of a dedicated hardware one for the selected quality, which uses noticeably more power. Try a lower quality in Advanced Settings if this matters to you.</string>
+    <string name="ui_settings_hint_softwareEncoder_dismiss">Dismiss</string>
     <string name="ui_settings_option_maxDuration_title">Max duration</string>
     <string name="ui_settings_option_maxDuration_description">Set the maximum duration of the recording</string>
     <string name="ui_settings_option_intervalDuration_title">Batch duration</string>
@@ -91,6 +94,8 @@
     <string name="ui_settings_option_deleteRecordingsImmediately_description">If enabled, RoadLog will immediately delete recordings after you have saved the file.</string>
     <string name="ui_settings_option_autoStartOnLaunch_title">Auto-start on launch</string>
     <string name="ui_settings_option_autoStartOnLaunch_description">Start recording automatically when RoadLog opens, without needing to tap Start.</string>
+    <string name="ui_settings_option_dimScreenWhileRecording_title">Dim screen while recording</string>
+    <string name="ui_settings_option_dimScreenWhileRecording_description">Fades the screen to a minimal brightness after a few seconds of inactivity while recording, to save power. Tap the screen to bring it back instantly.</string>
     <string name="ui_settings_option_saveFolder_title">Batches folder</string>
     <string name="ui_settings_option_saveFolder_explanation">Where RoadLog should store the temporary batches of your recordings.</string>
     <string name="ui_settings_option_saveFolder_action_select_label">Select</string>
@@ -115,6 +120,8 @@
     <string name="ui_settings_option_videoDisableAutofocus_description">Locks the rear camera\'s focus to the far distance and disables autofocus, so it doesn\'t refocus on the dashboard or windshield instead of the road. Only applies to newly-started recordings.</string>
     <string name="ui_settings_option_processVideo_title">Process Video</string>
     <string name="ui_settings_option_processVideo_description">When off, saving doesn\'t combine the recording into a single file — the individual chunks are moved to the save folder as-is instead. Applies the next time you save.</string>
+    <string name="ui_settings_option_lightweightSecondaryStream_title">Lightweight secondary camera</string>
+    <string name="ui_settings_option_lightweightSecondaryStream_description">When dual (front + back) recording is on, records the front/driver-facing stream at a lower quality to save power, since it only needs to verify who was driving. Applies to newly-started recordings.</string>
     <string name="ui_settings_value_videoQuality_values_highest">Highest</string>
     <string name="ui_settings_value_videoQuality_values_uhd">Ultra HD</string>
     <string name="ui_settings_value_videoQuality_values_fhd">Full HD</string>
@@ -147,6 +154,8 @@
     <string name="ui_settings_option_pipEnabled_permissionRationale_title">Allow floating window</string>
     <string name="ui_settings_option_pipEnabled_permissionRationale_message">RoadLog needs the \"draw over other apps\" permission to show the floating preview window while another app is in the foreground. You\'ll be taken to system settings to grant it.</string>
     <string name="ui_settings_option_pipEnabled_permissionRationale_confirm">Open settings</string>
+    <string name="ui_settings_option_pipIdleSuspend_title">Pause preview when idle</string>
+    <string name="ui_settings_option_pipIdleSuspend_description">Fades the floating preview window to a placeholder after a few seconds of inactivity to save power. Tap or drag it to bring the preview back instantly.</string>
     <string name="format_minutes"><xliff:g name="value">%d</xliff:g> min</string>
 
     <string name="ui_videoRecorder_action_start_label">Start Video Recording</string>
